@@ -1,1 +1,1 @@
-
+Exercício de coleta, tratamento e visualização de dados do mercado de trabalho no Brasil. Os dados são provenientes do SIDRA/IBGE, do Ministério do Trabalho via API do IPEA Dados e da Base dos Dados. O projeto explora saldos de emprego e características da força de trabalho nos estados nordestinos. Todo o código está disponível no arquivo mercado_de_trab.RMD.
