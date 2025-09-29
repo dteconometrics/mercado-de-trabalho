@@ -1,0 +1,772 @@
+---
+title: "Dados do Mercado de Trabalho"
+author: Vinicius Limeira 
+abstract: "exercício de coleta, tratamento e visualização de dados de dados públicos"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+    includes:
+      in_header: header.tex
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+#bibliography: 'references.bib'
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+
+\newpage
+
+# Sobre o Projeto {-}
+
+Este projeto é um exercício de **coleta, tratamento e visualização de dados** do mercado de trabalho no Brasil, utilizando dados do IBGE e MTE:
+
+
+- **SIDRA/IBGE** (Instituto Brasileiro de Geografia e Estatística): Instituto Brasileiro de Geografia e Estatística, dados coletados via pacote `sidrar` 
+- **MTE** (Ministério do Trabalho e Emprego): Dados sobre empregos formais, admissões, demissões e saldos de emprego, atraves do **IPEA Dados** e **Base dos Dados**.  
+
+
+O objetivo é consolidar essas informações e gerar **visualizações claras e interpretáveis** que permitam acompanhar tendências do mercado de trabalho.
+
+
+
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+## Pacotes 
+
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(knitr)
+library(ipeadatar)
+library(sidrar)
+library(knitr)
+library(ggthemes)
+library(plotly)
+library(vars)
+library(readxl)
+library(xtable)
+library(scales)
+library(basedosdados)
+library(ggrepel)
+
+
+# Fontes 
+
+foot_ibge <- "Fonte: Elaboração Própria com dados do IBGE"
+foot_mte <- "Fonte: Elaboração Própria com dados do Ministério da Economia."
+
+
+## Tema 
+
+
+theme_custom <- function() {
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "gray90", size = 0.2),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "gray70"),
+    legend.position = "none",
+    strip.text = element_text(size = 11, face = "bold", color = "#032cab"),
+    plot.title = element_text(size = 16, face = "bold", color = "#032cab", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, color = "gray30", hjust = 0.5),
+    plot.caption = element_text(size = 9, color = "gray50", face = "italic"),
+    axis.title = element_text(size = 11, face = "bold", color = "gray30"),
+    axis.text = element_text(size = 10, color = "gray30"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+}
+
+```
+
+
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+## Dados do Ibge ----------------
+
+names = c("date", "populacao")
+names_2 = c('date', 'pnea', 'pea', 'desocupada', 'ocupada', 'pia')
+
+# populacao 
+
+populacao = sidrar::get_sidra(api='/t/6022/n1/all/v/606/p/all') |> 
+  dplyr::mutate(date = parse_date(`Trimestre Móvel (Código)`, format = '%Y%m')) |> 
+  dplyr::select(date, Valor) |> 
+  as_tibble()
+
+
+condicao = sidrar::get_sidra(api='/t/6318/n1/all/v/1641/p/all/c629/all') |> 
+  dplyr::mutate(date = parse_date(`Trimestre Móvel (Código)`, format='%Y%m')) %>% 
+  dplyr::select(date, "Condição em relação à força de trabalho e condição de ocupação", Valor) %>% 
+  spread("Condição em relação à força de trabalho e condição de ocupação", Valor) %>% 
+  `colnames<-`(names_2) %>% 
+  as_tibble()
+
+## Juntando os Dados 
+
+agregado_pnad = dplyr::inner_join(populacao, condicao, by='date') |> 
+  dplyr::rename(populacao = Valor) |>
+  dplyr::mutate(inativos = populacao - pia,
+                desemprego = round((desocupada/pea) * 100, 1),
+                participacao = pea/pia*100) |> 
+  dplyr::select(date, populacao, inativos,  pia, pea, pnea, ocupada, desocupada, desemprego , participacao)
+
+agregado_pnad_long = agregado_pnad %>% gather(variavel, valor, -date)
+
+
+## Categoria de Ocupação (com carteira x sem carteira)
+
+categoria <- "/t/6320/n1/all/v/4090/p/all/c11913/31722,31723,96165" |>
+  sidrar::get_sidra(api = _) |> 
+  dplyr::mutate(date = parse_date(`Trimestre Móvel (Código)`, format='%Y%m')) |> 
+  dplyr::select(date, "Posição na ocupação e categoria do emprego no trabalho principal", Valor) |> 
+  spread("Posição na ocupação e categoria do emprego no trabalho principal", Valor) |> 
+    rename(
+    'Emprego com Carteira' = 'Empregado no setor privado, exclusive trabalhador doméstico - com carteira de trabalho assinada',
+    'Emprego sem Carteira' = 'Empregado no setor privado, exclusive trabalhador doméstico - sem carteira de trabalho assinada'
+  ) %>% 
+  as_tibble()
+
+categoria_long = categoria |> 
+  gather(variavel, valor, -date)
+
+## Rendimentos (Habitual x Efetivo)
+
+pnad_massa = get_sidra(api = '/t/6392/n1/all/v/6288,6293/p/all') %>% 
+  dplyr::mutate(date = parse_date(`Trimestre Móvel (Código)`, format='%Y%m')) %>% 
+  dplyr::select(date, Valor, variavel = Variável) %>% 
+  pivot_wider(names_from = variavel, values_from = Valor) %>% 
+  dplyr::rename(
+    habitual = "Massa de rendimento mensal nominal das pessoas de 14 anos ou mais de idade ocupadas na semana de referência com rendimento de trabalho, habitualmente recebido em todos os trabalhos",
+    efetivo = "Massa de rendimento mensal real das pessoas de 14 anos ou mais de idade ocupadas na semana de referência com rendimento de trabalho, habitualmente recebido em todos os trabalhos"
+  ) %>% 
+  as_tibble()
+
+pnad_massa_long = pnad_massa |> 
+  gather(variavel, valor, -date) |> 
+  mutate(date = as.Date(date))
+
+
+
+# Rendimento por setor
+
+pnad_setor = '/t/6391/n1/all/v/5932/p/all/c888/all' %>% 
+  get_sidra(api=.) %>% 
+  dplyr::mutate(date = parse_date(`Trimestre Móvel (Código)`, format='%Y%m')) %>% 
+  dplyr::select(date, setor = "Grupamento de atividade no trabalho principal", Valor) %>% 
+  pivot_wider(names_from = setor, values_from = Valor) %>% 
+  dplyr::rename(
+    comercio = "Comércio, reparação de veículos automotores e motocicletas",
+    servicos = "Outros serviços",
+    construcao = "Construção",
+    industria = "Indústria geral"
+  ) %>% 
+  dplyr::select(date, comercio, servicos, construcao, industria) |> 
+  as_tibble()
+
+
+pnad_setor_long = pnad_setor %>% gather(variavel, valor, -date) %>% mutate(date = as.Date(date))
+
+
+## Escolaridade 
+
+escolaridade = '/t/4095/n1/all/v/1641/p/all/c1568/all' |> 
+  get_sidra(api= _) |> 
+  dplyr::mutate(date = as.yearqtr(`Trimestre (Código)`, format = '%Y%q')) |> 
+  dplyr::select(date, Valor, "escolaridade" = "Nível de instrução") |> 
+   pivot_wider(names_from = escolaridade,
+              values_from = Valor) |> 
+   dplyr::select(-Total, -`Não determinado`) |> 
+   arrange(date)
+
+escolaridade_long = escolaridade |> 
+  gather(variavel, valor, -date) |> 
+  dplyr::mutate(date = as.Date(date))
+
+
+## Caged --------------- 
+
+id_projeto <- "caged-382619"
+
+basedosdados::set_billing_id(id_projeto)
+tabela_db <- "br_me_caged.microdados_movimentacao"
+caged_tbl <- basedosdados::bdplyr(tabela_db)
+
+
+query_caged <- caged_tbl %>%
+  head(1000) %>%
+  collect()
+
+
+## Resultado por Estados 
+
+
+
+
+caged_estados <- caged_tbl |> 
+  dplyr::filter(sigla_uf %in% c("RO", "AC", "AM", "RR", "PA", "AP", "TO", "MA", "PI", "CE", "RN", 
+                                "PB", "PE", "AL", "SE", "BA", "MG", "ES", "RJ", "SP", "PR", 
+                                "SC", "RS", "MS", "GO", "DF"))
+
+
+
+
+saldo_estados <- caged_estados |> 
+   dplyr::count(ano, mes, saldo_movimentacao, sigla_uf) |> 
+   basedosdados::bd_collect() |> 
+  dplyr::mutate(
+    date = lubridate::make_date(year = ano, month = mes, day = 1L),
+    movimentacao = dplyr::if_else(saldo_movimentacao == 1, "Admissão", "Demissão"),
+    n = dplyr::if_else(saldo_movimentacao == 1, n, -n)
+  )
+  
+
+saldo_estados <- saldo_estados |>  
+  arrange(date) |>  
+  dplyr::select(date, saldo_movimentacao, n, movimentacao, sigla_uf)
+
+
+df_estados <- saldo_estados |> 
+  group_by(date, sigla_uf) |> 
+  summarise(
+    admissao = sum(n[saldo_movimentacao == 1]),
+    demissao = sum(n[saldo_movimentacao == -1]),
+    saldo = admissao + demissao  
+    
+  )
+
+df_estados_long <- df_estados |> 
+  dplyr::select(date, sigla_uf, admissao, demissao) |> 
+  pivot_wider(
+    names_from = sigla_uf,
+    values_from = c(admissao, demissao) 
+  )
+
+
+## Saldos por Estados 
+
+
+caged_saldos <- caged_tbl |> 
+  dplyr::filter(sigla_uf %in% c("RO", "AC", "AM", "RR", "PA", "AP", "TO", "MA", "PI", "CE", "RN", 
+                                "PB", "PE", "AL", "SE", "BA", "MG", "ES", "RJ", "SP", "PR", 
+                                "SC", "RS", "MS", "GO", "DF")) |> 
+  
+  dplyr::group_by(ano, mes, sigla_uf) |> 
+  dplyr::summarise(saldo = sum(saldo_movimentacao, na.rm = TRUE)) |> 
+  collect()
+
+
+
+caged_saldos <- caged_saldos |> 
+  mutate(date = as.Date(paste(ano, mes, "01", sep = "-"))) |> 
+  ungroup() |> 
+  dplyr::select(date, sigla_uf, saldo) |> 
+  pivot_wider(names_from = sigla_uf, values_from = saldo, 
+              names_prefix = "saldo_") |> 
+  arrange(date)
+  
+
+caged_saldo_long <- caged_saldos |> 
+  tidyr::pivot_longer(cols = starts_with("saldo_"),
+                      names_to = "sigla_uf",
+                      values_to = "saldo")
+
+
+## Dados do Caged pelo IPEA  -----------
+
+variaveis <- ipeadatar::available_series()
+df_caged = ipeadata(c("CAGED12_SALDON12"), language = "br")
+
+parametros <- list(api_caged = "CAGED12_SALDON12")
+
+
+raw_caged <- ipeadatar::ipeadata(code = parametros$api_caged)
+
+
+# Saldo do Novo CAGED
+caged <- raw_caged %>%
+  dplyr::select(date, value) %>% 
+  dplyr::mutate(value = value / 1000) %>% # converter em milhares
+  dplyr::as_tibble()
+
+
+
+
+
+## Funcao para visualização ------------------
+
+plot_pnad <- function(data, variaveis, labels_variaveis, colours, footnote, subtitle = NULL, subtitles_variaveis = NULL) {
+  
+  # Últimas observações
+  last_obs <- data |>
+    dplyr::filter(variavel %in% variaveis) |>
+    dplyr::group_by(variavel) |>
+    dplyr::filter(date == max(date)) |>
+    dplyr::ungroup()
+  
+  # Se houver subtítulos por variável, cria labeller customizado
+  if (!is.null(subtitles_variaveis)) {
+    facet_labeller <- labeller(
+      variavel = function(x) paste0(labels_variaveis[x], "\n", subtitles_variaveis[x])
+    )
+  } else {
+    facet_labeller <- labeller(variavel = labels_variaveis)
+  }
+  
+  # Gráfico
+  p <- data %>% 
+    dplyr::filter(variavel %in% variaveis) %>% 
+    ggplot(aes(x = date, y = valor, colour = variavel)) + 
+    geom_line(size = 1) +   
+    geom_point(data = last_obs, size = 3) + 
+    scale_colour_manual(
+      values = colours, 
+      labels = labels_variaveis
+    ) +
+    scale_x_date(breaks = scales::pretty_breaks(n = 8), date_labels = "%b %Y") + 
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) + # folga no eixo Y
+    ggthemes::theme_foundation() +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      panel.grid.major = element_line(color = "gray90", size = 0.2),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(color = "gray70"),
+      legend.position = "none",
+      strip.text = element_text(size = 11, face = "bold", color = "#032cab"),
+      plot.title = element_text(size = 16, face = "bold", color = "#032cab", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, color = "gray30", hjust = 0.5),
+      plot.caption = element_text(size = 9, color = "gray50", face = "italic"),
+      axis.title = element_text(size = 11, face = "bold", color = "gray30"),
+      axis.text = element_text(size = 10, color = "gray30"),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    facet_wrap(~ variavel, scales = "free_y", labeller = facet_labeller) +
+    ggrepel::geom_label_repel(
+      data = last_obs,
+      aes(label = round(valor, 1)),
+      size = 2.5, fontface = "bold", color = "black", fill = "white", label.size = 0.3,
+      box.padding = 0.3, point.padding = 0.2, max.overlaps = Inf
+    ) +
+    labs(
+      x = '', 
+      y = '',
+      title = 'Mercado de Trabalho no Brasil',
+      subtitle = subtitle,
+      caption = footnote
+    )
+  
+  return(p)
+}
+
+plot_escolaridade <- function(data, ano_min = 2023, titulo = "Distribuição Percentual por Nível de Instrução", cores = NULL, anotacao_trimestre = NULL, anotacao_label = NULL) {
+  
+  # Preparar os dados
+  df <- data %>%
+    mutate(date = as.Date(date)) %>%
+    filter(format(date, "%Y") >= as.character(ano_min)) %>%
+    mutate(
+      trimestre = paste0(quarter(date), "Q", substr(year(date), 3, 4)),
+      variavel = dplyr::recode(variavel,
+        'Ensino fundamental completo ou equivalente' = 'Fundamental Completo',
+        'Ensino médio incompleto ou equivalente' = 'Médio Incompleto',
+        'Ensino médio completo ou equivalente' = 'Médio Completo',
+        'Ensino superior incompleto ou equivalente' = 'Superior Incompleto',
+        'Ensino superior completo ou equivalente' = 'Superior Completo',
+        'Ensino fundamental incompleto ou equivalente' = 'Fundamental Incompleto',
+        'Sem instrução e menos de 1 ano de estudo' = 'Sem Instrução'
+      )
+    ) %>%
+    group_by(trimestre) %>%
+    mutate(percentual = valor / sum(valor) * 100) %>%
+    ungroup() %>%
+    arrange(trimestre)
+  
+  # Paleta padrão se não fornecida
+  if (is.null(cores)) {
+    cores <- c(
+      rgb(0, 40, 77, maxColorValue = 255),
+      rgb(0, 54, 103, maxColorValue = 255),
+      rgb(0, 68, 129, maxColorValue = 255),
+      rgb(0, 82, 155, maxColorValue = 255),
+      rgb(0, 96, 181, maxColorValue = 255),
+      rgb(0, 110, 207, maxColorValue = 255),
+      rgb(0, 124, 233, maxColorValue = 255),
+      rgb(0, 138, 250, maxColorValue = 255),
+      rgb(20, 152, 255, maxColorValue = 255),
+      rgb(40, 166, 255, maxColorValue = 255)
+    )
+  }
+  
+  # Construir gráfico
+  p <- ggplot(df, aes(x = trimestre, y = percentual, fill = variavel)) +
+    geom_bar(stat = "identity", color = "white", size = 0.2) +
+    geom_text(aes(label = paste0(round(percentual, 1), "%")),
+              position = position_stack(vjust = 0.5), size = 2.5, color = "white") +
+    scale_fill_manual(values = cores) +
+    labs(
+      x = "Trimestres",
+      y = "Percentual",
+      title = titulo,
+      fill = "Nível de Instrução"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.y = element_text(size = 8),
+      legend.position = "top",
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      panel.grid.minor = element_blank()
+    )
+  
+  # Adicionar anotação opcional
+  if (!is.null(anotacao_trimestre) & !is.null(anotacao_label)) {
+    p <- p +
+      annotate(
+        "segment", x = anotacao_trimestre, xend = anotacao_trimestre, y = 110, yend = 85,
+        arrow = arrow(type = "closed", length = unit(0.2, "cm")), color = "#3b89bc", size = 1
+      ) +
+      annotate(
+        "text", x = anotacao_trimestre, y = 115, label = anotacao_label, color = "#3b89bc", size = 4, fontface = "bold", hjust = 0.5
+      )
+  }
+  
+  return(p)
+}
+
+
+```
+
+
+
+## Taxa de Desocupação e Participação 
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+colours_4 <- c("#001F3F", "#004080", "#0066CC", 
+               "#3399FF", "#66B2FF", "#99CCFF")
+
+## Ultimas Obs 
+
+last_obs <- agregado_pnad_long |> 
+  dplyr::filter(variavel %in% c('desemprego', 'participacao')) |> 
+  group_by(variavel) |> 
+  filter(date == max(date)) |> 
+  ungroup()
+
+## Legendas do Gráfico 
+
+labels_variaveis <- c(
+  "desemprego" = "Taxa de Desemprego (%)",
+  "participacao" = "Taxa de Participação (%)"
+)
+
+## visualização 
+
+agregado_pnad_long %>% 
+  dplyr::filter(variavel %in% c('participacao', 'desemprego')) %>% 
+  ggplot(aes(x = date, y = valor, colour = variavel)) + 
+  geom_line(size = 1) +   # Linha mais espessa para maior destaque
+  geom_point(data = last_obs, size = 3) + # Destaque para último ponto
+  scale_colour_manual(
+    values = colours_4, 
+    labels = c(
+      "desemprego" = "Taxa de Desocupação",
+      "participacao" = "Taxa de Participação"
+    )
+  ) +
+  scale_x_date(breaks = pretty_breaks(n = 8), date_labels = "%b %Y") + 
+  ggthemes::theme_foundation() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "gray90", size = 0.2),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "gray70"),
+    legend.position = "none",
+    strip.text = element_text(size = 11, face = "bold", color = "#032cab"),
+    plot.title = element_text(size = 16, face = "bold", color = "#032cab", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, color = "gray30", hjust = 0.5),
+    plot.caption = element_text(size = 9, color = "gray50", face = "italic"),
+    axis.title = element_text(size = 11, face = "bold", color = "gray30"),
+    axis.text = element_text(size = 10, color = "gray30"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  facet_wrap(~ variavel, scales = "free_y", labeller = labeller(variavel = labels_variaveis)) +
+  geom_label(
+    data = last_obs,
+    aes(label = round(valor, 1)),
+    vjust = -0.3, hjust = 0.7, size = 2.5, fontface = "bold", color = "black", fill = "white", label.size = 0.3
+  ) +
+  labs(x = '', y = '',
+       title = 'Mercado de Trabalho no Brasil',
+       caption = foot_ibge)
+
+
+
+```
+
+
+## Grupos 
+
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+labels_variaveis <- c(
+  "inativos" = "População Inativa",
+  "pnea" = "População Não Economicamente Ativa",
+  "pia" = "População em Idade Ativa",
+  "ocupada" = "População Ocupada"
+)
+
+
+plot_pnad(
+  data = agregado_pnad_long,
+  variaveis = c("inativos", "pnea", "pia", "ocupada"),
+  labels_variaveis = labels_variaveis,
+  colours = colours_4,
+  footnote = foot_ibge
+)
+
+
+```
+## Massa Salarial
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+
+plot_pnad(
+  data = pnad_massa_long,
+  variaveis = c("habitual", "efetivo"),
+  labels_variaveis = labels_variaveis,
+  colours = colours_4,
+  footnote = foot_ibge,
+  subtitle = "Evolução da massa salarial habitual e efetiva"
+)
+
+
+```
+
+## Rendimento
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+
+
+
+plot_pnad(
+  data = pnad_setor_long,
+  variaveis = c("comercio", "servicos", "construcao", "industria"),
+  labels_variaveis = labels_variaveis,
+  colours = colours_4,
+  footnote = foot_ibge,
+  subtitle = "Rendimento por setor"
+)
+
+
+```
+## Ocupação
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+last_obs <- categoria_long %>%
+  dplyr::filter(variavel %in% c("Total","Emprego com Carteira", "Emprego sem Carteira")) %>%
+  group_by(variavel) %>%
+  filter(date == max(date)) %>%
+  ungroup()
+
+
+library(ggrepel)
+
+categoria_long %>% 
+  dplyr::filter(variavel %in% c("Total","Emprego com Carteira", "Emprego sem Carteira")) %>% 
+  ggplot(aes(x = date, y = valor, colour = variavel)) + 
+  geom_line(size = 1) +   
+  geom_point(data = last_obs, size = 3) + 
+  scale_colour_manual(values = colours_4) +
+  scale_x_date(breaks = pretty_breaks(n = 8), date_labels = "%b %Y") + 
+  ggthemes::theme_foundation() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "gray90", size = 0.2),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "gray70"),
+    legend.position = "top",
+    strip.text = element_text(size = 11, face = "bold", color = "#032cab"),
+    plot.title = element_text(size = 16, face = "bold", color = "#032cab", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, color = "gray30", hjust = 0.5),
+    plot.caption = element_text(size = 9, color = "gray50", face = "italic"),
+    axis.title = element_text(size = 11, face = "bold", color = "gray30"),
+    axis.text = element_text(size = 10, color = "gray30"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  geom_text_repel(
+    data = last_obs %>% filter(variavel == "Total"),
+    aes(label = round(valor, 1)),
+    size = 3, fontface = "bold", color = "black",
+    box.padding = 0.4, point.padding = 0.2,
+    segment.color = "gray70", show.legend = FALSE
+  ) +
+  geom_label(
+    data = last_obs %>% filter(variavel != "Total"),
+    aes(label = round(valor, 1)),
+    vjust = -0.3, hjust = 0.7, size = 2.5, fontface = "bold",
+    color = "black", fill = "white", label.size = 0.3
+  ) +
+  labs(x = '', 
+       y = '',
+       title = 'Ocupação Por Categoria',
+       caption = foot_ibge)
+
+```
+
+## Escolaridade 
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+plot_escolaridade(
+  escolaridade_long, 
+  ano_min = 2023, 
+  anotacao_trimestre = "2Q25", 
+  anotacao_label = "Último Resultado"
+)
+
+
+```
+
+
+
+## Novo Caged
+
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+
+last_obs <- caged %>%
+  filter(date == max(date))
+
+ggplot(caged, aes(x = date, y = value, fill = value > 0)) +
+  geom_col(show.legend = FALSE, width = 25) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.6) +
+  scale_fill_manual(values = c("TRUE" = "#032cab", "FALSE" = "gray30")) +
+  
+  # Rótulo só no último valor
+  geom_text(
+    data = last_obs,
+    aes(label = scales::label_number(suffix = " mil")(value)),
+    vjust = ifelse(last_obs$value >= 2, -0.8, 0),
+     hjust = 0.2,
+    fontface = "bold",
+    color = "black",
+    size = 3
+  ) +
+  
+  # Mostrar apenas um mês a cada 3 meses
+  scale_x_date(
+    date_breaks = "3 months",
+    date_labels = "%b %Y"
+  ) +
+  
+  labs(
+    title = "Saldo de Empregos Formais - Novo CAGED",
+    subtitle = "Valores em milhares",
+    x = '',
+    y = "mil pessoas",
+    caption = foot_mte
+  ) +
+  theme_custom() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+## Caged Nordeste 
+
+```{r, echo=F, eval=T, results='asis', fig.width=8, fig.height=4, fig.align='center', out.width="1\\linewidth", warning=FALSE, message=FALSE, size='small'}
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(ggrepel)
+
+# Vetor de labels com prefixo "saldo_"
+estado_labels <- c(
+  "saldo_PE" = "Pernambuco",
+  "saldo_PB" = "Paraíba",
+  "saldo_RN" = "Rio Grande do Norte",
+  "saldo_CE" = "Ceará",
+  "saldo_MA" = "Maranhão",
+  "saldo_PI" = "Piauí",
+  "saldo_AL" = "Alagoas",
+  "saldo_SE" = "Sergipe"
+)
+
+# Paleta de cores com os mesmos nomes
+colours <- c(
+  "saldo_PE" = "#001F3F",
+  "saldo_PB" = "#002E66",
+  "saldo_RN" = "#004080",
+  "saldo_CE" = "#235EBF",
+  "saldo_MA" = "#3399FF",
+  "saldo_PI" = "#66B2FF",
+  "saldo_AL" = "#7FC3FF",
+  "saldo_SE" = "#99CCFF"
+)
+
+# Últimos valores por estado
+ultimos_valores <- caged_saldo_long %>%
+  filter(date > '2023-09-01' &
+           sigla_uf %in% names(estado_labels)) %>%
+  group_by(sigla_uf) %>%
+  slice_max(order_by = date, n = 1) %>%
+  ungroup()
+
+# Plot
+caged_saldo_long %>%
+  filter(date > '2023-09-01' &
+           sigla_uf %in% names(estado_labels)) %>%
+  ggplot(aes(x = date, y = saldo, fill = sigla_uf)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(
+    data = ultimos_valores,
+    aes(label = scales::comma(saldo, big.mark = ",")),
+    vjust = -1.2,
+    size = 2.5,
+    color = "black"
+  ) +
+  scale_fill_manual(values = colours) +
+  geom_hline(yintercept = 0, colour = 'black', linetype = 'dashed') +
+  facet_wrap(~sigla_uf, scales = 'free', labeller = labeller(sigla_uf = estado_labels)) +
+  theme_classic() +
+  theme(
+    strip.text = element_text(size = 7, face = 'bold'),
+    axis.text.x = element_text(size = 6),
+    plot.title = element_text(size = 10, face = 'bold'),
+    plot.subtitle = element_text(size = 8, face = 'italic')
+  ) +
+  scale_x_date(breaks = pretty_breaks(n = 3), date_labels = "%b %Y") +
+  labs(
+    x = '',
+    y = '',
+    title = 'Saldos dos Estados Nordestinos',
+    caption = foot_mte
+  )
+```
+
+
+
